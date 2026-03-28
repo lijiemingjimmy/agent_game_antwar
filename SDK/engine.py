@@ -290,7 +290,11 @@ class GameState:
         if operation.op_type == OperationType.BUILD_TOWER:
             return -self.build_tower_cost(self.tower_count(player) if tower_count_hint is None else tower_count_hint)
         if operation.op_type == OperationType.UPGRADE_TOWER:
-            return -self.upgrade_tower_cost(TowerType(operation.arg1))
+            try:
+                target_type = TowerType(operation.arg1)
+            except ValueError:
+                return 0
+            return -self.upgrade_tower_cost(target_type)
         if operation.op_type == OperationType.DOWNGRADE_TOWER:
             tower = self.tower_by_id(operation.arg0)
             if tower is None:
@@ -329,7 +333,11 @@ class GameState:
                 return False
             if self.is_shielded_by_emp(player, tower.x, tower.y):
                 return False
-            if not tower.is_upgrade_type_valid(TowerType(operation.arg1)):
+            try:
+                target_type = TowerType(operation.arg1)
+            except ValueError:
+                return False
+            if not tower.is_upgrade_type_valid(target_type):
                 return False
             if any(op.op_type in (OperationType.UPGRADE_TOWER, OperationType.DOWNGRADE_TOWER) and op.arg0 == operation.arg0 for op in pending_list):
                 return False
@@ -404,7 +412,11 @@ class GameState:
         if operation.op_type == OperationType.UPGRADE_TOWER:
             tower = self.tower_by_id(operation.arg0)
             assert tower is not None
-            tower.upgrade(TowerType(operation.arg1))
+            try:
+                target_type = TowerType(operation.arg1)
+            except ValueError:
+                return
+            tower.upgrade(target_type)
             return
         if operation.op_type == OperationType.DOWNGRADE_TOWER:
             tower = self.tower_by_id(operation.arg0)
@@ -886,11 +898,26 @@ class GameState:
         tower_map = {tower.tower_id: tower for tower in self.towers}
         synced_towers: list[Tower] = []
         for tower_id, player, x, y, tower_type, cooldown in public_state.towers:
-            tower = tower_map.get(tower_id, Tower(tower_id, player, x, y, TowerType(tower_type), float(cooldown)))
+            if tower_type < 0:
+                tower_map.pop(tower_id, None)
+                continue
+            try:
+                tower_enum = TowerType(tower_type)
+            except ValueError:
+                tower = tower_map.get(tower_id)
+                if tower is None:
+                    continue
+                tower.player = player
+                tower.x = x
+                tower.y = y
+                tower.cooldown_clock = float(cooldown)
+                synced_towers.append(tower)
+                continue
+            tower = tower_map.get(tower_id, Tower(tower_id, player, x, y, tower_enum, float(cooldown)))
             tower.player = player
             tower.x = x
             tower.y = y
-            tower.tower_type = TowerType(tower_type)
+            tower.tower_type = tower_enum
             tower.cooldown_clock = float(cooldown)
             synced_towers.append(tower)
         self.towers = synced_towers

@@ -205,6 +205,54 @@ def test_sync_public_round_state_maps_frozen_status_to_hidden_flag() -> None:
     assert synced.pending_behavior == AntBehavior.RANDOM
 
 
+def test_sync_public_round_state_ignores_deleted_tower_markers() -> None:
+    state = GameState.initial(seed=6)
+    state.towers.append(Tower(20, 0, 6, 9, TowerType.BASIC, cooldown_clock=1.0))
+    state.towers.append(Tower(21, 0, 8, 7, TowerType.HEAVY, cooldown_clock=2.0))
+    public_state = PublicRoundState(
+        round_index=4,
+        towers=[
+            (20, 0, 6, 9, -1, 0),
+            (21, 0, 8, 7, int(TowerType.HEAVY), 2),
+        ],
+        ants=[],
+        coins=(40, 40),
+        camps_hp=(50, 50),
+    )
+
+    state.sync_public_round_state(public_state)
+
+    assert [tower.tower_id for tower in state.towers] == [21]
+
+
+def test_sync_public_round_state_preserves_existing_tower_on_unknown_type() -> None:
+    state = GameState.initial(seed=6)
+    state.towers.append(Tower(22, 1, 12, 9, TowerType.QUICK, cooldown_clock=3.0))
+    public_state = PublicRoundState(
+        round_index=5,
+        towers=[(22, 1, 12, 9, 4, 7)],
+        ants=[],
+        coins=(40, 40),
+        camps_hp=(50, 50),
+    )
+
+    state.sync_public_round_state(public_state)
+
+    assert len(state.towers) == 1
+    assert state.towers[0].tower_type == TowerType.QUICK
+    assert state.towers[0].cooldown_clock == 7.0
+
+
+def test_invalid_upgrade_target_is_rejected_without_crashing() -> None:
+    state = GameState.initial(seed=6)
+    tower = Tower(30, 0, 6, 9, TowerType.BASIC, cooldown_clock=0.0)
+    state.towers.append(tower)
+    operation = Operation(OperationType.UPGRADE_TOWER, 30, 4)
+
+    assert state.can_apply_operation(0, operation) is False
+    assert state.apply_operation_list(0, [operation]) == [operation]
+
+
 def test_update_pheromone_walks_backwards_from_current_position() -> None:
     state = GameState.initial(seed=1)
     ant = Ant(3, 0, 6, 9, hp=0, level=0, age=4, path=[4], status=AntStatus.FAIL)
