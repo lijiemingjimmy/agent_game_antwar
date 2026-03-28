@@ -26,6 +26,7 @@ dist/
 
 # Local runtime artifacts
 replays/
+fighting_examples/
 ai_mcts_submit/
 mcts-package/
 Ant-Game-main/

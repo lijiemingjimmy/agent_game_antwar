@@ -145,3 +145,33 @@ def test_late_phase_limits_frontloaded_build_spam() -> None:
     build_count = sum(1 for bundle in bundles if bundle.tags and bundle.tags[0] == "build")
 
     assert build_count <= 2
+
+
+def test_early_basic_towers_are_not_eagerly_sold_for_churn() -> None:
+    state = GameState.initial(seed=31)
+    state.round_index = 40
+    state.coins[0] = 260
+    state.towers.append(Tower(16, 0, 6, 9, TowerType.BASIC, cooldown_clock=0.0))
+    state.towers.append(Tower(17, 0, 5, 9, TowerType.BASIC, cooldown_clock=0.0))
+
+    bundles = ActionCatalog()._downgrade_candidates(state, 0)
+
+    assert bundles == []
+
+
+def test_quick_branch_saturation_pushes_new_upgrade_toward_other_branches() -> None:
+    state = GameState.initial(seed=32)
+    state.coins[0] = 260
+    state.towers.append(Tower(18, 0, 6, 9, TowerType.QUICK_PLUS, cooldown_clock=0.0))
+    state.towers.append(Tower(19, 0, 5, 9, TowerType.QUICK_PLUS, cooldown_clock=0.0))
+    state.towers.append(Tower(20, 0, 8, 7, TowerType.BASIC, cooldown_clock=0.0))
+    state.ants.append(Ant(21, 1, 9, 8, hp=25, level=1, behavior=AntBehavior.DEFAULT))
+    state.ants.append(Ant(22, 1, 10, 8, hp=10, level=0, behavior=AntBehavior.DEFAULT))
+
+    candidates = {
+        bundle.operations[0].arg1: bundle.score
+        for bundle in ActionCatalog()._upgrade_candidates(state, 0)
+        if bundle.operations[0].arg0 == 20
+    }
+
+    assert candidates[int(TowerType.HEAVY)] > candidates[int(TowerType.QUICK)]
