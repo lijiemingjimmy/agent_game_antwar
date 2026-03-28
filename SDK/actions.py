@@ -6,6 +6,7 @@ import numpy as np
 
 from SDK.constants import (
     AntBehavior,
+    CENTERLINE_WEIGHTS,
     MAX_ACTIONS,
     OperationType,
     PLAYER_BASES,
@@ -83,7 +84,9 @@ class ActionCatalog:
                 self._tower_type_fit(state, player, x, y, target)
                 for target in TOWER_UPGRADE_TREE[TowerType.BASIC]
             )
-            score = lane_bonus * 0.55 + pressure * 1.8 + branch_fit * 0.65
+            score = lane_bonus * 0.5 + pressure * 1.8 + branch_fit * 0.65
+            score += self._build_lane_adjustment(state, player, x, y)
+            score -= self._build_spacing_penalty(state, player, x, y)
             score -= build_cost * (0.05 + 0.01 * tower_count)
             if tower_count >= 2 and state.bases[player].generation_level + state.bases[player].ant_level < 2:
                 score -= 2.0
@@ -384,6 +387,68 @@ class ActionCatalog:
                 pressure += max(0.0, 6.5 - distance) * (1.0 + ant.level * 0.4)
         return pressure
 
+    def _lane_key(self, player: int, y: int) -> str:
+        base_y = PLAYER_BASES[player][1]
+        if y <= base_y - 2:
+            return "upper"
+        if y >= base_y + 2:
+            return "lower"
+        return "center"
+
+    def _lane_tower_counts(self, state: GameState, player: int) -> dict[str, int]:
+        counts = {"upper": 0, "center": 0, "lower": 0}
+        for tower in state.towers_of(player):
+            counts[self._lane_key(player, tower.y)] += 1
+        return counts
+
+    def _lane_enemy_pressure(self, state: GameState, player: int) -> dict[str, float]:
+        pressure = {"upper": 0.0, "center": 0.0, "lower": 0.0}
+        my_base = PLAYER_BASES[player]
+        for ant in state.ants_of(1 - player):
+            band = self._lane_key(player, ant.y)
+            progress = max(0.0, 12.0 - hex_distance(ant.x, ant.y, *my_base))
+            pressure[band] += 1.0 + ant.level * 0.7 + progress * 0.1
+            if ant.behavior != AntBehavior.CONTROL_FREE:
+                pressure[band] += 0.35
+        return pressure
+
+    def _build_lane_adjustment(self, state: GameState, player: int, x: int, y: int) -> float:
+        counts = self._lane_tower_counts(state, player)
+        pressure = self._lane_enemy_pressure(state, player)
+        band = self._lane_key(player, y)
+        tower_count = state.tower_count(player)
+        adjustment = pressure[band] * 0.22
+        if tower_count >= 2:
+            min_count = min(counts.values())
+            max_count = max(counts.values())
+            if counts[band] == min_count:
+                adjustment += 1.2 + max(0, max_count - min_count) * 0.45
+            if counts[band] > min_count + 1:
+                adjustment -= (counts[band] - min_count - 1) * 1.25
+        return adjustment
+
+    def _build_spacing_penalty(self, state: GameState, player: int, x: int, y: int) -> float:
+        penalty = 0.0
+        centerline_towers = 0
+        center_band_towers = 0
+        for tower in state.towers_of(player):
+            distance = hex_distance(x, y, tower.x, tower.y)
+            if distance <= 1:
+                penalty += 4.2
+            elif distance <= 2:
+                penalty += 2.4
+            elif distance <= 3:
+                penalty += 0.9
+            if (tower.x, tower.y) in CENTERLINE_WEIGHTS:
+                centerline_towers += 1
+            if self._lane_key(player, tower.y) == "center":
+                center_band_towers += 1
+        if (x, y) in CENTERLINE_WEIGHTS and centerline_towers >= 2:
+            penalty += 1.5 + (centerline_towers - 2) * 1.2
+        if self._lane_key(player, y) == "center" and center_band_towers >= 3:
+            penalty += 0.8 + (center_band_towers - 3) * 0.9
+        return penalty
+
     def _enemy_profile(self, state: GameState, player: int, x: int, y: int, radius: int = 6) -> dict[str, float]:
         my_base = PLAYER_BASES[player]
         profile = {
@@ -415,7 +480,9 @@ class ActionCatalog:
 
     def _tower_type_fit(self, state: GameState, player: int, x: int, y: int, tower_type: TowerType) -> float:
         enemy_base = PLAYER_BASES[1 - player]
+        own_base = PLAYER_BASES[player]
         forward_distance = hex_distance(x, y, *enemy_base)
+        home_distance = hex_distance(x, y, *own_base)
         local_density = self._local_enemy_pressure(state, player, x, y)
         profile = self._enemy_profile(state, player, x, y)
         control = profile["control_targets"]
@@ -451,7 +518,8 @@ class ActionCatalog:
             base = brute * 0.95 + swarm * 0.65 + protected * 0.5
         else:
             base = local_density * 0.5
-        return base + self._tower_diversity_adjustment(state, player, tower_type)
+        base += self._tower_diversity_adjustment(state, player, tower_type)
+        return base + self._tower_position_adjustment(player, x, y, tower_type, profile, home_distance, forward_distance)
 
     def _tower_branch_key(self, tower_type: TowerType) -> str:
         value = int(tower_type)
@@ -486,6 +554,42 @@ class ActionCatalog:
                 adjustment -= max(0, branch_count - 2) * 0.45
         elif branch == "basic":
             adjustment -= branch_count * 0.1
+        return adjustment
+
+    def _tower_position_adjustment(
+        self,
+        player: int,
+        x: int,
+        y: int,
+        tower_type: TowerType,
+        profile: dict[str, float],
+        home_distance: int,
+        forward_distance: int,
+    ) -> float:
+        band = self._lane_key(player, y)
+        progress = profile["progress"]
+        control = profile["control_targets"]
+        swarm = profile["swarm"]
+        brute = profile["brute"]
+
+        adjustment = 0.0
+        if band == "center":
+            if tower_type in (TowerType.ICE, TowerType.CANNON, TowerType.PULSE, TowerType.HEAVY_PLUS):
+                adjustment += 0.8 + progress * 0.18 + control * 0.08
+            if tower_type in (TowerType.QUICK, TowerType.QUICK_PLUS, TowerType.DOUBLE):
+                adjustment -= 0.55 + progress * 0.05
+        else:
+            if tower_type in (TowerType.MORTAR, TowerType.MORTAR_PLUS, TowerType.MISSILE, TowerType.SNIPER):
+                adjustment += 0.9 + swarm * 0.08 + brute * 0.05
+            if tower_type in (TowerType.ICE, TowerType.CANNON, TowerType.PULSE) and progress < 5.0:
+                adjustment -= 0.45
+
+        if home_distance >= 6 and tower_type in (TowerType.ICE, TowerType.CANNON, TowerType.PULSE):
+            adjustment += 0.5
+        if home_distance <= 4 and tower_type in (TowerType.SNIPER, TowerType.MISSILE, TowerType.HEAVY_PLUS):
+            adjustment += 0.45
+        if forward_distance <= 8 and tower_type in (TowerType.MORTAR_PLUS, TowerType.MISSILE):
+            adjustment -= 0.4
         return adjustment
 
     def _storm_value(self, state: GameState, player: int, x: int, y: int) -> float:

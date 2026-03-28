@@ -175,3 +175,33 @@ def test_quick_branch_saturation_pushes_new_upgrade_toward_other_branches() -> N
     }
 
     assert candidates[int(TowerType.HEAVY)] > candidates[int(TowerType.QUICK)]
+
+
+def test_centerline_saturation_pushes_new_builds_toward_flanks() -> None:
+    state = GameState.initial(seed=33)
+    state.coins[0] = 260
+    state.towers.append(Tower(23, 0, 6, 9, TowerType.BASIC, cooldown_clock=0.0))
+    state.towers.append(Tower(24, 0, 5, 9, TowerType.BASIC, cooldown_clock=0.0))
+
+    candidates = {bundle.name: bundle.score for bundle in ActionCatalog()._build_candidates(state, 0)}
+
+    assert candidates["build@8,7"] > candidates["build@4,9"]
+    assert candidates["build@5,7"] > candidates["build@4,9"]
+
+
+def test_pulse_upgrade_is_preferred_for_clustered_controllable_swarm() -> None:
+    state = GameState.initial(seed=34)
+    state.coins[0] = 260
+    state.towers.append(Tower(25, 0, 8, 7, TowerType.MORTAR, cooldown_clock=0.0))
+    state.ants.append(Ant(26, 1, 10, 8, hp=25, level=1, behavior=AntBehavior.DEFAULT))
+    state.ants.append(Ant(27, 1, 10, 9, hp=10, level=0, behavior=AntBehavior.DEFAULT))
+    state.ants.append(Ant(28, 1, 11, 8, hp=10, level=0, behavior=AntBehavior.RANDOM))
+
+    candidates = {
+        bundle.operations[0].arg1: bundle.score
+        for bundle in ActionCatalog()._upgrade_candidates(state, 0)
+        if bundle.operations[0].arg0 == 25
+    }
+
+    assert candidates[int(TowerType.PULSE)] > candidates[int(TowerType.MORTAR_PLUS)]
+    assert candidates[int(TowerType.PULSE)] > candidates[int(TowerType.MISSILE)]
